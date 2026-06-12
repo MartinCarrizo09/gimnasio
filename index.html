@@ -1233,19 +1233,24 @@ function fmtDur(seg){
   return m + ":" + String(s).padStart(2, "0");
 }
 
+let musTracks = [];
+let musIdx = -1;
+
 function renderMusica(tracks){
+  musTracks = tracks;
+  musIdx = -1;
   if (!tracks.length){
     $("#mus-resultados").innerHTML = '<p class="empty">Sin resultados. Probá con otro nombre.</p>';
     return;
   }
-  $("#mus-resultados").innerHTML = tracks.map(t => {
+  $("#mus-resultados").innerHTML = tracks.map((t, i) => {
     const titulo = esc(t.title);
     const artista = esc(t.artist ? t.artist.name : "");
     const q = encodeURIComponent((t.artist ? t.artist.name : "") + " " + t.title);
     const cover = t.album && t.album.cover_small ? t.album.cover_small : "";
-    return '<div class="mus-item" data-preview="' + esc(t.preview || "") + '">' +
+    return '<div class="mus-item" data-idx="' + i + '">' +
       (cover ? '<img src="' + esc(cover) + '" alt="" loading="lazy">' : "") +
-      '<div class="mus-info" data-action="mus-play" data-titulo="' + titulo + ' — ' + artista + '">' +
+      '<div class="mus-info" data-action="mus-play" data-idx="' + i + '">' +
         '<div class="t">' + titulo + '</div>' +
         '<div class="a">' + artista + ' · ' + fmtDur(t.duration || 0) + '</div>' +
       '</div>' +
@@ -1254,15 +1259,47 @@ function renderMusica(tracks){
   }).join("");
 }
 
-function reproducir(item, titulo){
-  const src = item.dataset.preview;
-  if (!src){ toast("Esta canción no tiene adelanto disponible"); return; }
+function reproducir(i){
+  const t = musTracks[i];
+  if (!t) return;
+  if (!t.preview){ toast("Esta canción no tiene adelanto disponible"); reproducirSiguiente(1); return; }
+  musIdx = i;
   const audio = $("#mus-audio");
-  audio.src = src;
+  audio.src = t.preview;
   audio.play().catch(() => {});
-  $("#mus-now").textContent = titulo;
+  $("#mus-now").textContent = t.title + " — " + (t.artist ? t.artist.name : "");
   $("#mus-player").style.display = "block";
-  $$(".mus-item").forEach(i => i.classList.toggle("playing", i === item));
+  $$(".mus-item").forEach(el => el.classList.toggle("playing", parseInt(el.dataset.idx, 10) === i));
+  setMediaSession(t);
+}
+
+/* Pasa al siguiente/anterior con adelanto disponible (lista circular) */
+function reproducirSiguiente(dir){
+  if (!musTracks.length || musIdx < 0) return;
+  let i = musIdx;
+  for (let k = 0; k < musTracks.length; k++){
+    i = (i + dir + musTracks.length) % musTracks.length;
+    if (musTracks[i] && musTracks[i].preview){ reproducir(i); return; }
+  }
+}
+
+/* Controles en pantalla de bloqueo y reproducción en segundo plano */
+function setMediaSession(t){
+  if (!("mediaSession" in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: t.title,
+      artist: t.artist ? t.artist.name : "",
+      album: t.album ? t.album.title : "",
+      artwork: t.album && t.album.cover_big
+        ? [{ src: t.album.cover_big, sizes: "500x500", type: "image/jpeg" }]
+        : []
+    });
+    navigator.mediaSession.setActionHandler("play", () => $("#mus-audio").play());
+    navigator.mediaSession.setActionHandler("pause", () => $("#mus-audio").pause());
+    navigator.mediaSession.setActionHandler("previoustrack", () => reproducirSiguiente(-1));
+    navigator.mediaSession.setActionHandler("nexttrack", () => reproducirSiguiente(1));
+  } catch(e){}
 }
 
 /* ================== NAVEGACIÓN Y EVENTOS ================== */
@@ -1300,7 +1337,7 @@ document.body.addEventListener("click", e => {
   const a = btn.dataset.action;
 
   if (a === "toggle-done") toggleDone(btn.closest(".ej-row"));
-  if (a === "mus-play") reproducir(btn.closest(".mus-item"), btn.dataset.titulo);
+  if (a === "mus-play") reproducir(parseInt(btn.dataset.idx, 10));
   if (a === "abrir-resumen") generarResumen();
   if (a === "cerrar-resumen") $("#modal-resumen").classList.remove("open");
   if (a === "copiar-resumen") copiarResumen();
@@ -1368,6 +1405,7 @@ $("#file-import").addEventListener("change", e => {
 });
 
 $("#btn-mus-buscar").addEventListener("click", () => buscarMusica($("#mus-q").value));
+$("#mus-audio").addEventListener("ended", () => reproducirSiguiente(1));
 $("#mus-q").addEventListener("keydown", e => {
   if (e.key === "Enter") buscarMusica($("#mus-q").value);
 });
