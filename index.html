@@ -228,6 +228,12 @@ nav button.active{color:var(--accent)}
 }
 #mus-audio{width:100%;margin-top:8px;border-radius:10px}
 #yt-wrap iframe{width:100%;height:220px;border:0;border-radius:10px;display:block}
+.mus-opts{display:flex;gap:8px;margin-top:10px}
+.mus-opts button{
+  flex:1;font-size:.76rem;padding:8px 6px;border-radius:8px;
+  background:var(--surface2);border:1px solid var(--border);color:var(--muted);
+}
+.mus-opts button.on{color:var(--accent);border-color:rgba(52,211,153,.4);background:var(--accent-dim)}
 
 /* pantallas muy chicas (320-360px) */
 @media (max-width:380px){
@@ -369,7 +375,11 @@ nav button.active{color:var(--accent)}
         <input type="text" id="mus-q" placeholder="Ej: Milo J" enterkeyhint="search">
         <button class="btn-ghost" id="btn-mus-buscar">Buscar</button>
       </div>
-      <p class="muted small" style="margin-top:8px">Tocá una canción y se reproduce completa acá adentro (reproductor de YouTube). Si no se encuentra la versión completa, suena el adelanto de 30 segundos. Al terminar un tema sigue solo con el próximo.</p>
+      <p class="muted small" style="margin-top:8px">Tocá una canción y se reproduce acá adentro. En modo Completas la app mantiene la pantalla despierta para que no se corte; en modo Adelantos (30 s) la música sigue aunque bloquees el celular.</p>
+      <div class="mus-opts">
+        <button id="mus-auto" type="button"></button>
+        <button id="mus-modo" type="button"></button>
+      </div>
     </div>
     <div class="card" id="mus-player" style="display:none">
       <div class="label">Reproduciendo</div>
@@ -1238,6 +1248,39 @@ function fmtDur(seg){
 let musTracks = [];
 let musIdx = -1;
 
+/* Preferencias del reproductor (persisten en el dispositivo) */
+const MUS_PREFS_KEY = "gymtrack_mus_prefs";
+let musPrefs = (function(){
+  try {
+    const p = JSON.parse(localStorage.getItem(MUS_PREFS_KEY));
+    if (p && typeof p.auto === "boolean" && (p.modo === "completa" || p.modo === "adelanto")) return p;
+  } catch(e){}
+  return { auto: true, modo: "completa" };
+})();
+
+function guardarMusPrefs(){
+  try { localStorage.setItem(MUS_PREFS_KEY, JSON.stringify(musPrefs)); } catch(e){}
+}
+
+function renderMusOpts(){
+  const ba = $("#mus-auto"), bm = $("#mus-modo");
+  ba.textContent = "Continuar solo: " + (musPrefs.auto ? "Sí" : "No");
+  ba.classList.toggle("on", musPrefs.auto);
+  bm.textContent = musPrefs.modo === "completa" ? "Modo: completas" : "Modo: adelantos 30 s";
+  bm.classList.toggle("on", musPrefs.modo === "completa");
+}
+
+/* Mantiene la pantalla despierta mientras suena una canción completa */
+let wakeLock = null;
+async function pedirWakeLock(){
+  try {
+    if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen");
+  } catch(e){}
+}
+function soltarWakeLock(){
+  if (wakeLock){ wakeLock.release().catch(() => {}); wakeLock = null; }
+}
+
 function renderMusica(tracks){
   musTracks = tracks;
   musIdx = -1;
@@ -1291,7 +1334,7 @@ function initYTPlayer(){
         ytReady = true;
         if (ytPendiente){ ytPlayer.loadVideoById(ytPendiente); ytPendiente = null; }
       },
-      onStateChange: e => { if (e.data === YT.PlayerState.ENDED) reproducirSiguiente(1); },
+      onStateChange: e => { if (e.data === YT.PlayerState.ENDED && musPrefs.auto) reproducirSiguiente(1); },
       onError: () => reproducirAdelanto(musIdx, "Ese video no permite reproducirse acá; suena el adelanto")
     }
   });
@@ -1317,6 +1360,7 @@ async function resolverVideoYT(t){
 function detenerTodo(){
   $("#mus-audio").pause();
   if (ytPlayer && ytReady){ try { ytPlayer.stopVideo(); } catch(e){} }
+  soltarWakeLock();
 }
 
 function reproducirAdelanto(i, msj){
@@ -1341,6 +1385,12 @@ async function reproducir(i){
   $("#mus-player").style.display = "block";
   $$(".mus-item").forEach(el => el.classList.toggle("playing", parseInt(el.dataset.idx, 10) === i));
 
+  // Modo adelantos: 30 s pero sigue sonando con el celular bloqueado
+  if (musPrefs.modo === "adelanto"){
+    reproducirAdelanto(i);
+    return;
+  }
+
   const vid = await resolverVideoYT(t);
   if (seq !== reproSeq) return; // el usuario ya eligió otra canción
   if (vid){
@@ -1350,6 +1400,7 @@ async function reproducir(i){
     if (ytReady && ytPlayer && ytPlayer.loadVideoById) ytPlayer.loadVideoById(vid);
     else ytPendiente = vid;
     setMediaSession(t);
+    pedirWakeLock();
   } else {
     reproducirAdelanto(i, "No encontré la versión completa; suena el adelanto de 30 s");
   }
@@ -1483,7 +1534,17 @@ $("#file-import").addEventListener("change", e => {
 });
 
 $("#btn-mus-buscar").addEventListener("click", () => buscarMusica($("#mus-q").value));
-$("#mus-audio").addEventListener("ended", () => reproducirSiguiente(1));
+$("#mus-audio").addEventListener("ended", () => { if (musPrefs.auto) reproducirSiguiente(1); });
+$("#mus-auto").addEventListener("click", () => {
+  musPrefs = { ...musPrefs, auto: !musPrefs.auto };
+  guardarMusPrefs(); renderMusOpts();
+});
+$("#mus-modo").addEventListener("click", () => {
+  musPrefs = { ...musPrefs, modo: musPrefs.modo === "completa" ? "adelanto" : "completa" };
+  guardarMusPrefs(); renderMusOpts();
+  if (musIdx >= 0) reproducir(musIdx);
+});
+renderMusOpts();
 $("#mus-q").addEventListener("keydown", e => {
   if (e.key === "Enter") buscarMusica($("#mus-q").value);
 });
