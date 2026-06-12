@@ -227,6 +227,7 @@ nav button.active{color:var(--accent)}
   border:1px solid rgba(248,113,113,.35);padding:5px 9px;border-radius:8px;
 }
 #mus-audio{width:100%;margin-top:8px;border-radius:10px}
+#yt-wrap iframe{width:100%;height:220px;border:0;border-radius:10px;display:block}
 
 /* pantallas muy chicas (320-360px) */
 @media (max-width:380px){
@@ -368,11 +369,12 @@ nav button.active{color:var(--accent)}
         <input type="text" id="mus-q" placeholder="Ej: Milo J" enterkeyhint="search">
         <button class="btn-ghost" id="btn-mus-buscar">Buscar</button>
       </div>
-      <p class="muted small" style="margin-top:8px">Tocá una canción para escuchar el adelanto de 30 segundos (catálogo gratuito de Deezer). Con el botón YouTube se abre la canción completa en la app de YouTube.</p>
+      <p class="muted small" style="margin-top:8px">Tocá una canción y se reproduce completa acá adentro (reproductor de YouTube). Si no se encuentra la versión completa, suena el adelanto de 30 segundos. Al terminar un tema sigue solo con el próximo.</p>
     </div>
     <div class="card" id="mus-player" style="display:none">
-      <div class="label">Reproduciendo adelanto</div>
+      <div class="label">Reproduciendo</div>
       <div id="mus-now" style="font-weight:700;margin-top:4px;font-size:.92rem"></div>
+      <div id="yt-wrap" style="display:none;margin-top:8px"><div id="yt-player"></div></div>
       <audio id="mus-audio" controls></audio>
     </div>
     <div class="card" id="mus-resultados"><p class="empty">Buscá un artista para ver sus canciones.</p></div>
@@ -1259,28 +1261,104 @@ function renderMusica(tracks){
   }).join("");
 }
 
-function reproducir(i){
+/* Instancias públicas de Piped (proyecto open source) usadas solo para
+   buscar el video; la reproducción es con el reproductor oficial de YouTube */
+const PIPED_INSTANCES = [
+  "https://pipedapi.kavin.rocks",
+  "https://pipedapi.adminforge.de",
+  "https://api.piped.private.coffee",
+  "https://piapi.ggtyler.dev"
+];
+
+let ytPlayer = null, ytReady = false, ytPendiente = null, reproSeq = 0;
+
+function cargarYTAPI(){
+  if (window.YT && window.YT.Player){ if (!ytPlayer) initYTPlayer(); return; }
+  if (cargarYTAPI._cargando) return;
+  cargarYTAPI._cargando = true;
+  window.onYouTubeIframeAPIReady = initYTPlayer;
+  const s = document.createElement("script");
+  s.src = "https://www.youtube.com/iframe_api";
+  document.body.appendChild(s);
+}
+
+function initYTPlayer(){
+  ytPlayer = new YT.Player("yt-player", {
+    height: "220", width: "100%",
+    playerVars: { playsinline: 1, autoplay: 1 },
+    events: {
+      onReady: () => {
+        ytReady = true;
+        if (ytPendiente){ ytPlayer.loadVideoById(ytPendiente); ytPendiente = null; }
+      },
+      onStateChange: e => { if (e.data === YT.PlayerState.ENDED) reproducirSiguiente(1); },
+      onError: () => reproducirAdelanto(musIdx, "Ese video no permite reproducirse acá; suena el adelanto")
+    }
+  });
+}
+
+async function resolverVideoYT(t){
+  const q = (t.artist ? t.artist.name + " " : "") + t.title;
+  for (const base of PIPED_INSTANCES){
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 4000);
+      const r = await fetch(base + "/search?q=" + encodeURIComponent(q) + "&filter=music_songs", { signal: ctl.signal });
+      clearTimeout(timer);
+      if (!r.ok) continue;
+      const j = await r.json();
+      const item = (j.items || []).find(x => x.url && x.url.indexOf("v=") !== -1);
+      if (item) return item.url.split("v=")[1].split("&")[0];
+    } catch(e){}
+  }
+  return null;
+}
+
+function detenerTodo(){
+  $("#mus-audio").pause();
+  if (ytPlayer && ytReady){ try { ytPlayer.stopVideo(); } catch(e){} }
+}
+
+function reproducirAdelanto(i, msj){
   const t = musTracks[i];
-  if (!t) return;
-  if (!t.preview){ toast("Esta canción no tiene adelanto disponible"); reproducirSiguiente(1); return; }
-  musIdx = i;
+  if (!t || !t.preview){ toast("Sin audio disponible para esta canción"); return; }
+  $("#yt-wrap").style.display = "none";
   const audio = $("#mus-audio");
+  audio.style.display = "block";
   audio.src = t.preview;
   audio.play().catch(() => {});
+  setMediaSession(t);
+  if (msj) toast(msj);
+}
+
+async function reproducir(i){
+  const t = musTracks[i];
+  if (!t) return;
+  const seq = ++reproSeq;
+  musIdx = i;
+  detenerTodo();
   $("#mus-now").textContent = t.title + " — " + (t.artist ? t.artist.name : "");
   $("#mus-player").style.display = "block";
   $$(".mus-item").forEach(el => el.classList.toggle("playing", parseInt(el.dataset.idx, 10) === i));
-  setMediaSession(t);
+
+  const vid = await resolverVideoYT(t);
+  if (seq !== reproSeq) return; // el usuario ya eligió otra canción
+  if (vid){
+    $("#mus-audio").style.display = "none";
+    $("#yt-wrap").style.display = "block";
+    cargarYTAPI();
+    if (ytReady && ytPlayer && ytPlayer.loadVideoById) ytPlayer.loadVideoById(vid);
+    else ytPendiente = vid;
+    setMediaSession(t);
+  } else {
+    reproducirAdelanto(i, "No encontré la versión completa; suena el adelanto de 30 s");
+  }
 }
 
-/* Pasa al siguiente/anterior con adelanto disponible (lista circular) */
+/* Siguiente / anterior (lista circular) */
 function reproducirSiguiente(dir){
   if (!musTracks.length || musIdx < 0) return;
-  let i = musIdx;
-  for (let k = 0; k < musTracks.length; k++){
-    i = (i + dir + musTracks.length) % musTracks.length;
-    if (musTracks[i] && musTracks[i].preview){ reproducir(i); return; }
-  }
+  reproducir((musIdx + dir + musTracks.length) % musTracks.length);
 }
 
 /* Controles en pantalla de bloqueo y reproducción en segundo plano */
