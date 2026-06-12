@@ -4,8 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0c1016">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <title>GymTrack — Seguimiento de entrenamiento</title>
 <style>
 :root{
@@ -207,6 +211,23 @@ nav button.active{color:var(--accent)}
 .acciones-datos{display:grid;gap:10px}
 .divider{height:1px;background:var(--border);margin:16px 0}
 
+/* música */
+.mus-buscar{display:flex;gap:8px}
+.mus-buscar input{flex:1}
+.mus-buscar button{flex-shrink:0}
+.mus-item{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid var(--border)}
+.mus-item:last-child{border-bottom:none}
+.mus-item img{width:42px;height:42px;border-radius:8px;flex-shrink:0;background:var(--surface2)}
+.mus-item .mus-info{flex:1;min-width:0;cursor:pointer}
+.mus-item .t{font-size:.88rem;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mus-item .a{font-size:.76rem;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mus-item.playing .t{color:var(--accent)}
+.mus-yt{
+  flex-shrink:0;font-size:.7rem;font-weight:700;color:var(--red);text-decoration:none;
+  border:1px solid rgba(248,113,113,.35);padding:5px 9px;border-radius:8px;
+}
+#mus-audio{width:100%;margin-top:8px;border-radius:10px}
+
 /* pantallas muy chicas (320-360px) */
 @media (max-width:380px){
   main{padding:12px}
@@ -338,6 +359,25 @@ nav button.active{color:var(--accent)}
     </div>
   </section>
 
+  <!-- ============ MÚSICA ============ -->
+  <section class="tab" id="tab-musica">
+    <h2>Música para entrenar</h2>
+    <div class="card">
+      <label for="mus-q">Buscar artista o canción</label>
+      <div class="mus-buscar">
+        <input type="text" id="mus-q" placeholder="Ej: Milo J" enterkeyhint="search">
+        <button class="btn-ghost" id="btn-mus-buscar">Buscar</button>
+      </div>
+      <p class="muted small" style="margin-top:8px">Tocá una canción para escuchar el adelanto de 30 segundos (catálogo gratuito de Deezer). Con el botón YouTube se abre la canción completa en la app de YouTube.</p>
+    </div>
+    <div class="card" id="mus-player" style="display:none">
+      <div class="label">Reproduciendo adelanto</div>
+      <div id="mus-now" style="font-weight:700;margin-top:4px;font-size:.92rem"></div>
+      <audio id="mus-audio" controls></audio>
+    </div>
+    <div class="card" id="mus-resultados"><p class="empty">Buscá un artista para ver sus canciones.</p></div>
+  </section>
+
   <!-- ============ MÁS ============ -->
   <section class="tab" id="tab-mas">
     <h2>Mi rutina (editable)</h2>
@@ -376,6 +416,10 @@ nav button.active{color:var(--accent)}
   <button data-tab="progreso" aria-label="Progreso">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6 4 4 7-8"/><path d="M16 7h4v4"/></svg>
     Progreso
+  </button>
+  <button data-tab="musica" aria-label="Música">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l11-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/></svg>
+    Música
   </button>
   <button data-tab="mas" aria-label="Más opciones">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8h16M4 16h16"/><circle cx="9" cy="8" r="2.2" fill="currentColor" stroke="none"/><circle cx="15" cy="16" r="2.2" fill="currentColor" stroke="none"/></svg>
@@ -1163,6 +1207,64 @@ function borrarTodo(){
   toast("Datos reiniciados");
 }
 
+/* ================== MÚSICA (catálogo Deezer, adelantos de 30 s) ================== */
+let musBuscado = false;
+
+function buscarMusica(q){
+  if (!q || !q.trim()) return;
+  if (!navigator.onLine){
+    $("#mus-resultados").innerHTML = '<p class="empty">Sin conexión: la música necesita internet.</p>';
+    return;
+  }
+  $("#mus-resultados").innerHTML = '<p class="empty">Buscando…</p>';
+  const viejo = document.getElementById("mus-jsonp");
+  if (viejo) viejo.remove();
+  window.onDeezer = res => renderMusica(res && res.data ? res.data : []);
+  const s = document.createElement("script");
+  s.id = "mus-jsonp";
+  s.src = "https://api.deezer.com/search?q=" + encodeURIComponent(q.trim()) +
+    "&limit=30&output=jsonp&callback=onDeezer";
+  s.onerror = () => { $("#mus-resultados").innerHTML = '<p class="empty">No se pudo buscar. Revisá la conexión.</p>'; };
+  document.body.appendChild(s);
+}
+
+function fmtDur(seg){
+  const m = Math.floor(seg / 60), s = seg % 60;
+  return m + ":" + String(s).padStart(2, "0");
+}
+
+function renderMusica(tracks){
+  if (!tracks.length){
+    $("#mus-resultados").innerHTML = '<p class="empty">Sin resultados. Probá con otro nombre.</p>';
+    return;
+  }
+  $("#mus-resultados").innerHTML = tracks.map(t => {
+    const titulo = esc(t.title);
+    const artista = esc(t.artist ? t.artist.name : "");
+    const q = encodeURIComponent((t.artist ? t.artist.name : "") + " " + t.title);
+    const cover = t.album && t.album.cover_small ? t.album.cover_small : "";
+    return '<div class="mus-item" data-preview="' + esc(t.preview || "") + '">' +
+      (cover ? '<img src="' + esc(cover) + '" alt="" loading="lazy">' : "") +
+      '<div class="mus-info" data-action="mus-play" data-titulo="' + titulo + ' — ' + artista + '">' +
+        '<div class="t">' + titulo + '</div>' +
+        '<div class="a">' + artista + ' · ' + fmtDur(t.duration || 0) + '</div>' +
+      '</div>' +
+      '<a class="mus-yt" href="https://www.youtube.com/results?search_query=' + q + '" target="_blank" rel="noopener">YouTube</a>' +
+    '</div>';
+  }).join("");
+}
+
+function reproducir(item, titulo){
+  const src = item.dataset.preview;
+  if (!src){ toast("Esta canción no tiene adelanto disponible"); return; }
+  const audio = $("#mus-audio");
+  audio.src = src;
+  audio.play().catch(() => {});
+  $("#mus-now").textContent = titulo;
+  $("#mus-player").style.display = "block";
+  $$(".mus-item").forEach(i => i.classList.toggle("playing", i === item));
+}
+
 /* ================== NAVEGACIÓN Y EVENTOS ================== */
 function showTab(nombre){
   $$(".tab").forEach(t => t.classList.toggle("active", t.id === "tab-" + nombre));
@@ -1172,6 +1274,11 @@ function showTab(nombre){
   if (nombre === "medidas") renderMedidas();
   if (nombre === "progreso") renderProgreso();
   if (nombre === "mas") renderRutina();
+  if (nombre === "musica" && !musBuscado){
+    musBuscado = true;
+    $("#mus-q").value = "Milo J";
+    buscarMusica("Milo J");
+  }
   window.scrollTo({ top: 0 });
 }
 
@@ -1193,6 +1300,7 @@ document.body.addEventListener("click", e => {
   const a = btn.dataset.action;
 
   if (a === "toggle-done") toggleDone(btn.closest(".ej-row"));
+  if (a === "mus-play") reproducir(btn.closest(".mus-item"), btn.dataset.titulo);
   if (a === "abrir-resumen") generarResumen();
   if (a === "cerrar-resumen") $("#modal-resumen").classList.remove("open");
   if (a === "copiar-resumen") copiarResumen();
@@ -1259,6 +1367,11 @@ $("#file-import").addEventListener("change", e => {
   e.target.value = "";
 });
 
+$("#btn-mus-buscar").addEventListener("click", () => buscarMusica($("#mus-q").value));
+$("#mus-q").addEventListener("keydown", e => {
+  if (e.key === "Enter") buscarMusica($("#mus-q").value);
+});
+
 /* ================== INIT ================== */
 (function init(){
   $("#ses-fecha").value = hoyISO();
@@ -1270,6 +1383,12 @@ $("#file-import").addEventListener("change", e => {
     if (d.nota) $("#ses-nota").value = d.nota;
   }
   renderTodo();
+  // PWA: instalable y offline
+  if ("serviceWorker" in navigator){
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("sw.js").catch(() => {});
+    });
+  }
 })();
 </script>
 </body>
